@@ -1,0 +1,26 @@
+{
+  "name": "@hydrooj/loj-download",
+  "bin": "bin/loj-download.js",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/adm-zip": "^0.4.34",
+    "@types/fs-extra": "^9.0.13",
+    "@types/js-yaml": "^4.0.5",
+    "@types/lodash": "^4.14.179",
+    "@types/node": "^17.0.21",
+    "@types/superagent": "^4.1.15",
+    "@types/superagent-proxy": "^3.0.0",
+    "chalk": "^5.0.0"
+  },
+  "dependencies": {
+    "adm-zip": "0.5.5",
+    "esbuild": "^0.14.23",
+    "fs-extra": "^10.0.1",
+    "js-yaml": "^4.1.0",
+    "lodash": "^4.17.21",
+    "superagent": "^7.1.1",
+    "superagent-proxy": "^3.0.0"
+  }
+}
