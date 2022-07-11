@@ -273,7 +273,7 @@ ${result.body.samples[section.sampleId].outputData}
     let totalCount = result.body.testData.length + result.body.additionalFiles.length;
     const r = await superagent.post(`${protocol}://${host === 'loj.ac' ? 'api.loj.ac.cn' : host}/api/problem/downloadProblemFiles`)
         .send({
-            problemId: pid,
+            problemId: result.body.meta.id,
             type: 'TestData',
             filenameList: result.body.testData.map((node) => node.filename),
         });
@@ -286,7 +286,7 @@ ${result.body.samples[section.sampleId].outputData}
     }
     const a = await superagent.post(`${protocol}://${host === 'loj.ac' ? 'api.loj.ac.cn' : host}/api/problem/downloadProblemFiles`)
         .send({
-            problemId: pid,
+            problemId: result.body.meta.id,
             type: 'AdditionalFile',
             filenameList: result.body.additionalFiles.map((node) => node.filename),
         });
