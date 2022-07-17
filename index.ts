@@ -220,7 +220,7 @@ ${result.body.samples[section.sampleId].outputData}
     write('problem.yaml', yaml.dump({
         title,
         owner: 1,
-        tags,
+        tag: tags,
         pid: `P${pid}`,
         nSubmit: result.body.meta.submissionCount,
         nAccept: result.body.meta.acceptedSubmissionCount,
