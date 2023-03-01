@@ -15,11 +15,11 @@
     "chalk": "^5.0.0"
   },
   "dependencies": {
+    "@hydrooj/utils": "^1.4.8",
     "adm-zip": "0.5.5",
-    "esbuild": "^0.14.23",
-    "fs-extra": "^10.0.1",
-    "js-yaml": "^4.1.0",
+    "fancy-progress": "^1.0.1",
     "lodash": "^4.17.21",
+    "p-queue": "^7.3.4",
     "superagent": "^7.1.1",
     "superagent-proxy": "^3.0.0"
   }

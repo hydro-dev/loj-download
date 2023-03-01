@@ -1,23 +1,19 @@
 import assert from "assert";
 import superagent, { SuperAgentRequest } from 'superagent';
-import yaml from 'js-yaml';
-import fs from 'fs-extra';
+import { fs, yaml } from '@hydrooj/utils';
+import { filter } from 'lodash';
+import Queue from 'p-queue';
 import AdmZip from 'adm-zip';
 import path from 'path';
+import { create } from 'fancy-progress';
 import os from 'os';
-import { filter } from 'lodash';
 import proxy from 'superagent-proxy';
-import WebpackBar from './progress';
 
-const report1 = new WebpackBar({
-    name: '* Total',
-});
-const report2 = new WebpackBar({
-    name: 'Problem',
-    color: 'red',
-});
+const report1 = create('* Total', 'green');
+const report2 = create('Problem', 'red');
 
 proxy(superagent);
+const queue = new Queue({ concurrency: 5 });
 
 const ScoreTypeMap = {
     GroupMin: 'min',
@@ -45,7 +41,7 @@ function downloadFile(url: string): SuperAgentRequest;
 function downloadFile(url: string, path?: string, retry?: number);
 function downloadFile(url: string, path?: string, retry = 3) {
     if (path) return _download(url, path, retry);
-    return superagent.get(url).retry(retry);
+    return superagent.get(url).timeout({ response: 10000 }).retry(retry);
 }
 
 function createWriter(id) {
@@ -168,8 +164,8 @@ async function v2(url: string) {
 }
 
 async function v3(protocol: string, host: string, pid: number) {
-    report2.updateProgress(0, '', ['Fetching info']);
-    const result = await superagent.post(`${protocol}://${host === 'loj.ac' ? 'api.loj.ac.cn' : host}/api/problem/getProblem`)
+    report2.update(0, 'Fetching info');
+    const result = await superagent.post(`${protocol}://${host === 'loj.ac' ? 'api.loj.ac' : host}/api/problem/getProblem`)
         .send({
             displayId: pid,
             localizedContentsOfAllLocales: true,
@@ -228,13 +224,13 @@ ${result.body.samples[section.sampleId].outputData}
     const judge = result.body.judgeInfo;
     const rename = {};
     if (judge) {
-        report2.updateProgress(0, '', ['Fetching judge config']);
+        report2.update(0, 'Fetching judge config');
         const config: ProblemConfigFile = {
             time: `${judge.timeLimit}ms`,
             memory: `${judge.memoryLimit}m`,
         };
         if (judge.extraSourceFiles) {
-            const files = [];
+            const files: string[] = [];
             for (const key in judge.extraSourceFiles) {
                 for (const file in judge.extraSourceFiles[key]) {
                     files.push(file);
@@ -271,33 +267,63 @@ ${result.body.samples[section.sampleId].outputData}
         + result.body.additionalFiles.map(i => i.size).reduce((a, b) => a + b, 0);
     let downloadedCount = 0;
     let totalCount = result.body.testData.length + result.body.additionalFiles.length;
-    const r = await superagent.post(`${protocol}://${host === 'loj.ac' ? 'api.loj.ac.cn' : host}/api/problem/downloadProblemFiles`)
-        .send({
-            problemId: result.body.meta.id,
-            type: 'TestData',
-            filenameList: result.body.testData.map((node) => node.filename),
-        });
+    const [r, a] = await Promise.all([
+        superagent.post(`${protocol}://${host === 'loj.ac' ? 'api.loj.ac' : host}/api/problem/downloadProblemFiles`)
+            .send({
+                problemId: result.body.meta.id,
+                type: 'TestData',
+                filenameList: result.body.testData.map((node) => node.filename),
+            })
+            .timeout(10000).retry(5),
+        superagent.post(`${protocol}://${host === 'loj.ac' ? 'api.loj.ac' : host}/api/problem/downloadProblemFiles`)
+            .send({
+                problemId: result.body.meta.id,
+                type: 'AdditionalFile',
+                filenameList: result.body.additionalFiles.map((node) => node.filename),
+            })
+            .timeout(10000).retry(5),
+    ]);
     if (r.body.error) throw new Error(r.body.error.message || r.body.error);
-    for (const f of r.body.downloadInfo) {
-        report2.updateProgress(downloadedSize / totalSize, '', [f.filename + ' (' + (downloadedCount + 1) + '/' + totalCount + ')']);
-        await downloadFile(f.downloadUrl, write('testdata/' + (rename[f.filename] || f.filename)));
-        downloadedSize += result.body.testData.find(i => i.filename === f.filename).size;
-        downloadedCount++;
-    }
-    const a = await superagent.post(`${protocol}://${host === 'loj.ac' ? 'api.loj.ac.cn' : host}/api/problem/downloadProblemFiles`)
-        .send({
-            problemId: result.body.meta.id,
-            type: 'AdditionalFile',
-            filenameList: result.body.additionalFiles.map((node) => node.filename),
-        });
     if (a.body.error) throw new Error(a.body.error.message || a.body.error);
-    for (const f of a.body.downloadInfo) {
-        report2.updateProgress(downloadedSize / totalSize, '', [f.filename + ' (' + (downloadedCount + 1) + '/' + totalCount + ')']);
-        await downloadFile(f.downloadUrl, write('additional_file/' + f.filename));
-        downloadedSize += result.body.additionalFiles.find(i => i.filename === f.filename).size;
-        downloadedCount++;
+    for (const f of r.body.downloadInfo) {
+        queue.add(async () => {
+            const expectedSize = result.body.testData.find(i => i.filename === f.filename).size;
+            const filepath = 'testdata/' + (rename[f.filename] || f.filename);
+            if (fs.existsSync(filepath)) {
+                const size = fs.statSync(filepath).size;
+                console.log(filepath, size, expectedSize)
+                if (size === expectedSize) {
+                    downloadedSize += size;
+                    downloadedCount++;
+                    return;
+                }
+            }
+            await downloadFile(f.downloadUrl, write(filepath));
+            downloadedSize += expectedSize;
+            downloadedCount++;
+            report2.update(downloadedSize / totalSize, f.filename + ' (' + (downloadedCount + 1) + '/' + totalCount + ')');
+        });
     }
-    report2.updateProgress(downloadedSize / totalSize, '', ['']);
+    for (const f of a.body.downloadInfo) {
+        queue.add(async () => {
+            const expectedSize = result.body.additionalFiles.find(i => i.filename === f.filename).size;
+            const filepath = 'additional_file/' + f.filename;
+            if (fs.existsSync(filepath)) {
+                const size = fs.statSync(filepath).size;
+                if (size === expectedSize) {
+                    downloadedSize += size;
+                    downloadedCount++;
+                    return;
+                }
+            }
+            await downloadFile(f.downloadUrl, write(filepath));
+            downloadedSize += expectedSize;
+            downloadedCount++;
+            report2.update(downloadedSize / totalSize, f.filename + ' (' + (downloadedCount + 1) + '/' + totalCount + ')');
+        });
+    }
+    await queue.onIdle();
+    report2.update(downloadedSize / totalSize, '');
 }
 
 async function run(url: string) {
@@ -315,14 +341,14 @@ async function run(url: string) {
         else prefix = `${prefix.split('/problem/')[0]}/problem/`;
         const base = `${prefix}${start}/`;
         assert(base.match(RE_SYZOJ), new Error('prefix'));
-        const [, protocol, host] = RE_SYZOJ.exec(base);
+        const [, protocol, host] = RE_SYZOJ.exec(base)!;
         const count = end - start + 1;
         for (let i = start; i <= end; i++) {
-            report1.updateProgress((i - start) / count, '', [prefix + i + '']);
+            report1.update((i - start) / count, prefix + i + '');
             if (version === 3) await v3(protocol, host, i);
             else await v2(`${prefix}${i}/`);
         }
-        report2.updateProgress(1, '', ['']);
+        report2.update(1, '');
         return;
     }
     assert(url.match(RE_SYZOJ), new Error('url'));
