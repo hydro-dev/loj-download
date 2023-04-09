@@ -1,6 +1,6 @@
 import assert from "assert";
 import superagent, { SuperAgentRequest } from 'superagent';
-import { fs, yaml } from '@hydrooj/utils';
+import { fs, size, yaml } from '@hydrooj/utils';
 import { filter } from 'lodash';
 import Queue from 'p-queue';
 import AdmZip from 'adm-zip';
@@ -13,6 +13,7 @@ const report1 = create('* Total', 'green');
 const report2 = create('Problem', 'red');
 
 proxy(superagent);
+const p = process.env.https_proxy || process.env.http_proxy || process.env.all_proxy || '';
 const queue = new Queue({ concurrency: 5 });
 
 const ScoreTypeMap = {
@@ -26,9 +27,9 @@ const LanguageMap = {
 const RE_SYZOJ = /(https?):\/\/([^/]+)\/(problem|p)\/([0-9]+)\/?/i;
 
 async function _download(url: string, path: string, retry: number) {
+    if (fs.existsSync(path)) fs.unlinkSync(path);
     const w = fs.createWriteStream(path);
-    let req = superagent.get(url).retry(retry);
-    if (process.env.https_proxy) req = req.proxy(process.env.https_proxy)
+    let req = superagent.get(url).retry(retry).timeout({ response: 3000, deadline: 30000 }).proxy(p);
     req.pipe(w);
     await new Promise((resolve, reject) => {
         w.on('finish', resolve);
@@ -41,7 +42,7 @@ function downloadFile(url: string): SuperAgentRequest;
 function downloadFile(url: string, path?: string, retry?: number);
 function downloadFile(url: string, path?: string, retry = 3) {
     if (path) return _download(url, path, retry);
-    return superagent.get(url).timeout({ response: 10000 }).retry(retry);
+    return superagent.get(url).timeout({ response: 3000, deadline: 30000 }).proxy(p).retry(retry);
 }
 
 function createWriter(id) {
@@ -57,66 +58,43 @@ function createWriter(id) {
 }
 
 async function v2(url: string) {
-    throw new Error('Not implemented');
     const res = await superagent.get(`${url}export`);
     assert(res.status === 200, new Error('Cannot connect to target server'));
     assert(res.body.success, new Error((res.body.error || {}).message));
     const p = res.body.obj;
-    const content: ContentNode[] = [];
+    let c = '';
     if (p.description) {
-        content.push({
-            type: 'Text',
-            subType: 'markdown',
-            sectionTitle: this.translate('Problem Description'),
-            text: p.description,
-        });
+        c += `## 题目描述\n${p.description}\n\n`
     }
     if (p.input_format) {
-        content.push({
-            type: 'Text',
-            subType: 'markdown',
-            sectionTitle: this.translate('Input Format'),
-            text: p.input_format,
-        });
+        c += `## 输入格式\n${p.input_format}\n\n`
     }
     if (p.output_format) {
-        content.push({
-            type: 'Text',
-            subType: 'markdown',
-            sectionTitle: this.translate('Output Format'),
-            text: p.output_format,
-        });
+        c += `## 输出格式\n${p.output_format}\n\n`
     }
     if (p.example) {
-        content.push({
-            type: 'Text',
-            subType: 'markdown',
-            sectionTitle: this.translate('Sample'),
-            text: p.example,
-        });
+        c += `## 样例\n${p.example}\n\n`
     }
     if (p.hint) {
-        content.push({
-            type: 'Text',
-            subType: 'markdown',
-            sectionTitle: this.translate('Hint'),
-            text: p.hint,
-        });
+        c += `## 提示\n${p.hint}\n\n`
     }
     if (p.limit_and_hint) {
-        content.push({
-            type: 'Text',
-            subType: 'markdown',
-            sectionTitle: this.translate('Limit And Hint'),
-            text: p.limit_and_hint,
-        });
+        c += `## 限制与提示\n${p.limit_and_hint}\n\n`
     }
-    const c = buildContent(content, 'markdown');
-    const docId = await problem.add(
-        target, p.title, c, this.user._id, p.tags || [],
-    );
+    const u = new URL(url);
+    const pid = u.pathname.split('problem/')[1].split('/')[0];
+    const write = createWriter(u.host + '/' + pid);
+    write('problem_zh.md', c);
+    write('problem.yaml', yaml.dump({
+        title: p.title,
+        owner: 1,
+        tag: p.tags || [],
+        pid: `P${pid}`,
+        nSubmit: 0,
+        nAccept: 0,
+    }));
     const r = downloadFile(`${url}testdata/download`);
-    const file = path.resolve(os.tmpdir(), 'hydro', `import_${docId}.zip`);
+    const file = path.resolve(os.tmpdir(), 'hydro', `import_${pid}.zip`);
     const w = fs.createWriteStream(file);
     try {
         await new Promise((resolve, reject) => {
@@ -127,8 +105,8 @@ async function v2(url: string) {
         const zip = new AdmZip(file);
         const entries = zip.getEntries();
         for (const entry of entries) {
-            // eslint-disable-next-line no-await-in-loop
-            await problem.addTestdata(docId, entry.entryName, entry.getData());
+            if (entry.isDirectory) continue;
+            write('testdata/' + entry.entryName.split('/').pop(), entry.getData());
         }
         const filename = p.file_io_input_name ? p.file_io_input_name.split('.')[0] : null;
         const config = {
@@ -137,13 +115,13 @@ async function v2(url: string) {
             filename,
             type: p.type === 'traditional' ? 'default' : p.type,
         };
-        await problem.addTestdata(docId, 'config.yaml', Buffer.from(yaml.dump(config)));
+        write('testdata/config.yaml', yaml.dump(config));
     } finally {
         fs.unlinkSync(file);
     }
     if (p.have_additional_file) {
         const r1 = downloadFile(`${url}download/additional_file`);
-        const file1 = path.resolve(os.tmpdir(), 'hydro', `import_${docId}_a.zip`);
+        const file1 = path.resolve(os.tmpdir(), 'hydro', `import_${pid}_a.zip`);
         const w1 = fs.createWriteStream(file1);
         try {
             await new Promise((resolve, reject) => {
@@ -154,13 +132,12 @@ async function v2(url: string) {
             const zip = new AdmZip(file1);
             const entries = zip.getEntries();
             for (const entry of entries) {
-                await problem.addAdditionalFile(docId, entry.entryName.replace('/', '_'), entry.getData());
+                write('additional_file/' + entry.entryName.replace(/\//g, '_'), entry.getData());
             }
         } finally {
             fs.unlinkSync(file1);
         }
     }
-    return docId;
 }
 
 async function v3(protocol: string, host: string, pid: number) {
@@ -174,7 +151,8 @@ async function v3(protocol: string, host: string, pid: number) {
             judgeInfo: true,
             testData: true,
             additionalFiles: true,
-        });
+        })
+        .proxy(p);
     if (!result.body.localizedContentsOfAllLocales) {
         // Problem doesn't exist
         return;
@@ -274,23 +252,29 @@ ${result.body.samples[section.sampleId].outputData}
                 type: 'TestData',
                 filenameList: result.body.testData.map((node) => node.filename),
             })
-            .timeout(10000).retry(5),
+            .proxy(p).timeout(10000).retry(5),
         superagent.post(`${protocol}://${host === 'loj.ac' ? 'api.loj.ac' : host}/api/problem/downloadProblemFiles`)
             .send({
                 problemId: result.body.meta.id,
                 type: 'AdditionalFile',
                 filenameList: result.body.additionalFiles.map((node) => node.filename),
             })
-            .timeout(10000).retry(5),
+            .proxy(p).timeout(10000).retry(5),
     ]);
     if (r.body.error) throw new Error(r.body.error.message || r.body.error);
     if (a.body.error) throw new Error(a.body.error.message || a.body.error);
+    const tasks: [name: string, type: 'testdata' | 'additional_file', url: string, size: number][] = [];
     for (const f of r.body.downloadInfo) {
+        tasks.push([rename[f.filename] || f.filename, 'testdata', f.downloadUrl, result.body.testData.find(i => i.filename === f.filename).size]);
+    }
+    for (const f of a.body.downloadInfo) {
+        tasks.push([rename[f.filename] || f.filename, 'additional_file', f.downloadUrl, result.body.additionalFiles.find(i => i.filename === f.filename).size]);
+    }
+    for (const [name, type, url, expectedSize] of tasks) {
         queue.add(async () => {
-            const expectedSize = result.body.testData.find(i => i.filename === f.filename).size;
-            const filepath = 'testdata/' + (rename[f.filename] || f.filename);
-            if (fs.existsSync(filepath)) {
-                const size = fs.statSync(filepath).size;
+            const filepath = type + '/' + name;
+            if (fs.existsSync('downloads/' + host + '/' + pid + '/' + filepath)) {
+                const size = fs.statSync('downloads/' + host + '/' + pid + '/' + filepath).size;
                 console.log(filepath, size, expectedSize)
                 if (size === expectedSize) {
                     downloadedSize += size;
@@ -298,28 +282,10 @@ ${result.body.samples[section.sampleId].outputData}
                     return;
                 }
             }
-            await downloadFile(f.downloadUrl, write(filepath));
+            await downloadFile(url, write(filepath));
             downloadedSize += expectedSize;
             downloadedCount++;
-            report2.update(downloadedSize / totalSize, f.filename + ' (' + (downloadedCount + 1) + '/' + totalCount + ')');
-        });
-    }
-    for (const f of a.body.downloadInfo) {
-        queue.add(async () => {
-            const expectedSize = result.body.additionalFiles.find(i => i.filename === f.filename).size;
-            const filepath = 'additional_file/' + f.filename;
-            if (fs.existsSync(filepath)) {
-                const size = fs.statSync(filepath).size;
-                if (size === expectedSize) {
-                    downloadedSize += size;
-                    downloadedCount++;
-                    return;
-                }
-            }
-            await downloadFile(f.downloadUrl, write(filepath));
-            downloadedSize += expectedSize;
-            downloadedCount++;
-            report2.update(downloadedSize / totalSize, f.filename + ' (' + (downloadedCount + 1) + '/' + totalCount + ')');
+            report2.update(downloadedSize / totalSize, `(${size(downloadedSize)}/${size(totalSize)}) ` + name + ' (' + (downloadedCount + 1) + '/' + totalCount + ')');
         });
     }
     await queue.onIdle();
@@ -353,13 +319,26 @@ async function run(url: string) {
     }
     assert(url.match(RE_SYZOJ), new Error('url'));
     if (!url.endsWith('/')) url += '/';
-    const [, protocol, host, n, pid] = RE_SYZOJ.exec(url);
-    if (n === 'p') await v3(protocol, host, +pid)
+    const [, protocol, host, n, pid] = RE_SYZOJ.exec(url)!;
+    if (n === 'p') {
+        try {
+            await v3(protocol, host, +pid)
+        } catch (e) {
+            try {
+                await v3(protocol, host, +pid);
+            } catch (er) {
+                await v3(protocol, host, +pid);
+            }
+        }
+    }
     else await v2(url);
 }
 
 if (!process.argv[2]) console.log('loj-download <url>');
 else run(process.argv[2]).catch(e => {
     console.error(e);
-    process.exit(1);
+    setTimeout(() => {
+        console.error(e);
+        process.exit(1);
+    }, 1000);
 });
