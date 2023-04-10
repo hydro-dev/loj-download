@@ -29,11 +29,13 @@ const RE_SYZOJ = /(https?):\/\/([^/]+)\/(problem|p)\/([0-9]+)\/?/i;
 async function _download(url: string, path: string, retry: number) {
     if (fs.existsSync(path)) fs.unlinkSync(path);
     const w = fs.createWriteStream(path);
-    let req = superagent.get(url).retry(retry).timeout({ response: 3000, deadline: 30000 }).proxy(p);
+    let req = superagent.get(url).retry(retry).timeout({ response: 3000, deadline: 60000 }).proxy(p);
     req.pipe(w);
     await new Promise((resolve, reject) => {
         w.on('finish', resolve);
         w.on('error', reject);
+        req.on('error', reject);
+        req.on('timeout', reject);
     });
     return path;
 }
@@ -42,7 +44,7 @@ function downloadFile(url: string): SuperAgentRequest;
 function downloadFile(url: string, path?: string, retry?: number);
 function downloadFile(url: string, path?: string, retry = 3) {
     if (path) return _download(url, path, retry);
-    return superagent.get(url).timeout({ response: 3000, deadline: 30000 }).proxy(p).retry(retry);
+    return superagent.get(url).timeout({ response: 3000, deadline: 60000 }).proxy(p).retry(retry);
 }
 
 function createWriter(id) {
@@ -161,14 +163,16 @@ async function v3(protocol: string, host: string, pid: number) {
     for (const c of result.body.localizedContentsOfAllLocales) {
         let content = '';
         const sections = c.contentSections;
+        let add = false;
         for (const section of sections) {
             if (section.type === 'Sample') {
+                if (section.sampleId === 0) add = true;
                 content += `\
-\`\`\`input${section.sampleId}
+\`\`\`input${add ? section.sampleId + 1 : section.sampleId}
 ${result.body.samples[section.sampleId].inputData}
 \`\`\`
 
-\`\`\`output${section.sampleId}
+\`\`\`output${add ? section.sampleId + 1 : section.sampleId}
 ${result.body.samples[section.sampleId].outputData}
 \`\`\`
 
@@ -270,25 +274,32 @@ ${result.body.samples[section.sampleId].outputData}
     for (const f of a.body.downloadInfo) {
         tasks.push([rename[f.filename] || f.filename, 'additional_file', f.downloadUrl, result.body.additionalFiles.find(i => i.filename === f.filename).size]);
     }
+    let err;
     for (const [name, type, url, expectedSize] of tasks) {
         queue.add(async () => {
-            const filepath = type + '/' + name;
-            if (fs.existsSync('downloads/' + host + '/' + pid + '/' + filepath)) {
-                const size = fs.statSync('downloads/' + host + '/' + pid + '/' + filepath).size;
-                console.log(filepath, size, expectedSize)
-                if (size === expectedSize) {
-                    downloadedSize += size;
-                    downloadedCount++;
-                    return;
+            try {
+                const filepath = type + '/' + name;
+                if (fs.existsSync('downloads/' + host + '/' + pid + '/' + filepath)) {
+                    const size = fs.statSync('downloads/' + host + '/' + pid + '/' + filepath).size;
+                    console.log(filepath, size, expectedSize)
+                    if (size === expectedSize) {
+                        downloadedSize += size;
+                        downloadedCount++;
+                        return;
+                    }
                 }
+                await downloadFile(url, write(filepath));
+                downloadedSize += expectedSize;
+                downloadedCount++;
+                report2.update(downloadedSize / totalSize, `(${size(downloadedSize)}/${size(totalSize)}) ` + name + ' (' + (downloadedCount + 1) + '/' + totalCount + ')');
+            } catch (e) {
+                console.error(e)
+                err = e;
             }
-            await downloadFile(url, write(filepath));
-            downloadedSize += expectedSize;
-            downloadedCount++;
-            report2.update(downloadedSize / totalSize, `(${size(downloadedSize)}/${size(totalSize)}) ` + name + ' (' + (downloadedCount + 1) + '/' + totalCount + ')');
         });
     }
     await queue.onIdle();
+    if (err) throw err;
     report2.update(downloadedSize / totalSize, '');
 }
 
@@ -311,8 +322,17 @@ async function run(url: string) {
         const count = end - start + 1;
         for (let i = start; i <= end; i++) {
             report1.update((i - start) / count, prefix + i + '');
-            if (version === 3) await v3(protocol, host, i);
-            else await v2(`${prefix}${i}/`);
+            if (version === 3) {
+                try {
+                    await v3(protocol, host, i);
+                } catch (e) {
+                    try {
+                        await v3(protocol, host, i);
+                    } catch (e) {
+                        console.error(e);
+                    }
+                }
+            } else await v2(`${prefix}${i}/`);
         }
         report2.update(1, '');
         return;
@@ -320,19 +340,24 @@ async function run(url: string) {
     assert(url.match(RE_SYZOJ), new Error('url'));
     if (!url.endsWith('/')) url += '/';
     const [, protocol, host, n, pid] = RE_SYZOJ.exec(url)!;
-    if (n === 'p') {
-        try {
-            await v3(protocol, host, +pid)
-        } catch (e) {
-            try {
-                await v3(protocol, host, +pid);
-            } catch (er) {
-                await v3(protocol, host, +pid);
-            }
-        }
-    }
+    if (n === 'p') await v3(protocol, host, +pid);
     else await v2(url);
 }
+
+process.on('unhandledRejection', (e) => {
+    console.error(e);
+    setTimeout(() => {
+        console.error(e);
+        process.exit(1);
+    }, 1000);
+});
+process.on('uncaughtException', (e) => {
+    console.error(e);
+    setTimeout(() => {
+        console.error(e);
+        process.exit(1);
+    }, 1000);
+});
 
 if (!process.argv[2]) console.log('loj-download <url>');
 else run(process.argv[2]).catch(e => {
