@@ -281,12 +281,11 @@ ${result.body.samples[section.sampleId].outputData}
                 const filepath = type + '/' + name;
                 if (fs.existsSync('downloads/' + host + '/' + pid + '/' + filepath)) {
                     const size = fs.statSync('downloads/' + host + '/' + pid + '/' + filepath).size;
-                    console.log(filepath, size, expectedSize)
-                    if (size === expectedSize) {
+                                        if (size === expectedSize) {
                         downloadedSize += size;
                         downloadedCount++;
                         return;
-                    }
+                    }else console.log(filepath,size,expectedSize);
                 }
                 await downloadFile(url, write(filepath));
                 downloadedSize += expectedSize;
@@ -337,7 +336,7 @@ async function run(url: string) {
         report2.update(1, '');
         return;
     }
-    assert(url.match(RE_SYZOJ), new Error('url'));
+    assert(url.match(RE_SYZOJ), new Error('This is not a valid SYZOJ/Lyrio problem detail page link.'));
     if (!url.endsWith('/')) url += '/';
     const [, protocol, host, n, pid] = RE_SYZOJ.exec(url)!;
     if (n === 'p') await v3(protocol, host, +pid);
