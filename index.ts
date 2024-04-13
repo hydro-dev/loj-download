@@ -112,8 +112,8 @@ async function v2(url: string) {
         }
         const filename = p.file_io_input_name ? p.file_io_input_name.split('.')[0] : null;
         const config = {
-            time: `${p.time_limit}ms`,
-            memory: `${p.memory_limit}m`,
+            time: `${p.time_limit || 1000}ms`,
+            memory: `${p.memory_limit || 256}m`,
             filename,
             type: p.type === 'traditional' ? 'default' : p.type,
         };
