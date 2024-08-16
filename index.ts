@@ -177,6 +177,13 @@ ${result.body.samples[section.sampleId].outputData}
 \`\`\`
 
 `;
+                if (section.text) {
+                    content += `
+
+${section.text}
+
+`;
+                }
             } else {
                 content += '## ' + section.sectionTitle + '\n';
                 content += '\n' + section.text + '\n\n';
